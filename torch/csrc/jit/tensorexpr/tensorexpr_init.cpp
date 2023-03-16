@@ -830,7 +830,7 @@ void initTensorExprBindings(PyObject* module) {
             value_ptrs.reserve(py::len(values));
             for (const auto& value : values) {
               if (py::isinstance<py::int_>(value)) {
-                value_ptrs.emplace_back(value.cast<int64_t>());
+                value_ptrs.emplace_back(value.cast<int>());
               } else {
                 value_ptrs.emplace_back(value.cast<at::Tensor>().data_ptr());
               }
