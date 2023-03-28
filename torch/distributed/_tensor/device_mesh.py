@@ -19,9 +19,6 @@ from torch.distributed.distributed_c10d import (
     init_process_group,
     is_initialized,
     new_group,
-    reduce_scatter,
-    ProcessGroup,
-    ReduceOp,
     scatter,
 )
 
