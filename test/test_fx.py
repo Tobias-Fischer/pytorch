@@ -181,6 +181,7 @@ class TestFX(JitTestCase):
         self.assertEqual(ref_outs, test_outs)
 
     def test_graph_module(self):
+        self.assertEqual(2, 1)
         class MySub(torch.nn.Module):
             def __init__(self):
                 super().__init__()
