@@ -4,7 +4,6 @@ The following source file implements a sparse linear operator using cusparseLt
 #include <torch/custom_class.h>
 #include <torch/torch.h>
 #include "c10/core/ScalarType.h"
-#include "c10/util/Half.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDADataType.h>
 #include <ATen/cuda/CUDAUtils.h>
@@ -36,8 +35,8 @@ The following source file implements a sparse linear operator using cusparseLt
 struct CusparseLtLinear : torch::CustomClassHolder {
   // define constants
   constexpr static auto order        = CUSPARSE_ORDER_ROW;
-  constexpr static auto type         = CUDA_R_16F;
-  constexpr static auto compute_type = CUSPARSE_COMPUTE_16F;
+  constexpr static auto type         = CUDA_R_8I;
+  constexpr static auto compute_type = CUSPARSE_COMPUTE_32I;
 
   // this tensor is magic, will segfault when removed ? 
   at::Tensor weight_compressed;
@@ -107,6 +106,7 @@ void CusparseLtLinear::set_compressed(const at::Tensor& weight) {
   // SETTING UP VALUES 
   // m & k are for weight I think, k & n are for input
   //--------------------------------------------------------------------------
+  auto num_weight_bytes = weight.numel() * weight.element_size();
   int64_t m = weight.size(0);
   int64_t k = weight.size(1);
 
@@ -183,7 +183,7 @@ void CusparseLtLinear::set_compressed(const at::Tensor& weight) {
   // CHECK_CUDA( cudaMalloc((void**)&dA_compressed, compressed_size) )
   CHECK_CUDA( cudaMalloc((void**)&dA_compressedBuffer, compressed_buffer_size) )
 
-  // std::cout << "SIZE BYTES "<< num_weight_bytes<< "  " << compressed_size <<"  "<<  (float)num_weight_bytes / (float)compressed_size << std::endl;
+  std::cout << "SIZE BYTES "<< num_weight_bytes<< "  " << compressed_size <<"  "<<  (float)num_weight_bytes / (float)compressed_size << std::endl;
 
   CHECK_CUSPARSE(
     cusparseLtSpMMACompress2(
@@ -204,6 +204,8 @@ at::Tensor CusparseLtLinear::masked_mm(const at::Tensor& input) {
 
   // create tensor
   auto res = input.new_empty({input.size(0), num_A_rows, input.size(2)});
+
+  std::cout << res.device() << std::endl;
 
   int num_batches = (int)input.size(0);
   int64_t k = input.size(1);
@@ -315,7 +317,7 @@ at::Tensor CusparseLtLinear::masked_mm(const at::Tensor& input) {
       compute_type) )
 
   // SET BIAS POINTER
-  //--------------------------------------------------------------------------
+  // --------------------------------------------------------------------------
   CHECK_CUSPARSE(
     cusparseLtMatmulDescSetAttribute(
       &handle,
@@ -358,7 +360,7 @@ at::Tensor CusparseLtLinear::masked_mm(const at::Tensor& input) {
         &beta,
         res.data_ptr(),
         res.data_ptr(),
-        nullptr,
+        d_workspace,
         streams,
         num_streams) )
     CHECK_CUSPARSE(
