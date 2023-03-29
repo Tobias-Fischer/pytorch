@@ -593,6 +593,9 @@ class CUDAGraphNode:
             self.expected_dead_indices_before_graph = different_indices
 
         recording_inputs = self._allocate_recording_inputs(inputs)
+        # recording inputs will copy over memory, so we can free non recording inputs
+        inputs.clear()
+        del inputs
 
         # graph used for recording model invocation
         self.graph = torch.cuda.CUDAGraph()
@@ -637,32 +640,38 @@ class CUDAGraphNode:
         # initialized on first run
         self.checkpointed_caching_state: Optional[AllocatorState] = None
 
+    def _copy_input(self, idx, dst, src):
+        expanded_dims = self.expanded_dims[idx]
+        dst = index_expanded_dims(dst, expanded_dims)
+        src = index_expanded_dims(src, expanded_dims)
+        # TODO - one jit kernel across multiple inputs
+        dst.copy_(src)
+
     def run(self, new_inputs):
         if config.triton.slow_cudagraph_asserts:
             self.debug_check_invariants_before_invocation()
 
-        assert len(self.static_input_data_ptrs) == len(new_inputs)
-
         storage_cache = {}
-        # NB: this ranges over non-static inputs too
-        for idx, data_ptr in enumerate(self.static_input_data_ptrs):
-            if idx in self.cudagraph_managed_idxs:
-                continue
-            if data_ptr is not None:
-                # static input, e.g., parameter
-                assert data_ptr == new_inputs[idx].data_ptr()
-            else:
-                # non-static input, need to copy it into CUDA graph
-                dst = self._reconstruct_from_tensor_metadata(
-                    self.non_static_inputs_metadata[idx], storage_cache
-                )
-                src = new_inputs[idx]
-                expanded_dims = self.expanded_dims[idx]
 
-                dst = index_expanded_dims(dst, expanded_dims)
-                src = index_expanded_dims(src, expanded_dims)
-                # TODO - one jit kernel across multiple inputs
-                dst.copy_(src)
+        if self.recording_outputs is None:
+            assert len(self.static_input_data_ptrs) == len(new_inputs)
+            # NB: this ranges over non-static inputs too
+            for idx, data_ptr in enumerate(self.static_input_data_ptrs):
+                if idx in self.cudagraph_managed_idxs:
+                    continue
+                if data_ptr is not None:
+                    # static input, e.g., parameter
+                    assert data_ptr == new_inputs[idx].data_ptr()
+                else:
+                    # non-static input, need to copy it into CUDA graph
+                    dst = self._reconstruct_from_tensor_metadata(
+                        self.non_static_inputs_metadata[idx], storage_cache
+                    )
+                    src = new_inputs[idx]
+                    self._copy_input(idx, dst, src)
+        else:
+            # inputs are copied over in _allocate_recording_inputs and subsequently cleared
+            assert len(new_inputs) == 0
 
         new_inputs.clear()
         self.graph.replay()
@@ -946,25 +955,22 @@ class CUDAGraphNode:
     def _allocate_recording_inputs(self, inputs):
         "Allocate inputs for non static, non cudagraph managraphed managed tensors in the memory pool"
 
-        # How come we need another cuda graph?  This graph is never replayed;
-        # it is just a way to force allocations to go into the shared pool
-        inps_alloc_graph = torch.cuda.CUDAGraph()
-
         torch.cuda.synchronize()
         self.stream.wait_stream(torch.cuda.current_stream())
         recording_inputs = []
 
         with warnings.catch_warnings(record=True), torch.cuda.device(
             self.device
-        ), torch.cuda.graph(
-            inps_alloc_graph,
-            pool=self.cuda_graphs_pool,
+        ), _use_cuda_memory_pool_manager(
+            self.device,
+            mem_pool=self.cuda_graphs_pool,
             stream=self.stream,
         ):
             for i, inp in enumerate(inputs):
                 if i not in self.static_input_idxs:
                     # static_input does an allocation!
                     recording_inputs.append(static_input(inp))
+                    self._copy_input(i, recording_inputs[-1], inp)
                 else:
                     recording_inputs.append(inp)
 
@@ -1104,11 +1110,11 @@ class CUDAGraphTreeManager:
         # will not be reused; separate recordings would have use the same memory pool, but not
         # the same memory.
 
-        torch.cuda.synchronize()
-        self.stream = torch.cuda.Stream()
-        self.stream.wait_stream(torch.cuda.current_stream())
-
         with torch.cuda.device(device_index):
+            torch.cuda.synchronize()
+            self.stream = torch.cuda.Stream()
+            self.stream.wait_stream(torch.cuda.current_stream())
+
             self.cuda_graphs_thread_pool = torch.cuda.graph_pool_handle()
             # Keeps Memory Pool Alive
             self.graph = torch.cuda.CUDAGraph()
