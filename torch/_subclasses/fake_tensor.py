@@ -85,6 +85,11 @@ _device_not_kwarg_ops = (
     aten._resize_output.out,
 )
 
+_nested_constructors = (
+    aten._nested_tensor_from_tensor_list.default,
+    aten._nested_tensor_from_tensor_list.out,
+)
+
 # this op is never actually used
 _non_kwarg_device_constructors = (aten._list_to_tensor,)
 
@@ -513,7 +518,24 @@ def index_put_(fake_mode, func, *args, **kwargs):
     return new_kwargs["input"]
 
 
-@register_op_impl(lambda fn: fn in _device_not_kwarg_ops)
+@register_op_impl(lambda fn: fn in _nested_constructors)
+def nested_constructor(fake_mode, func, *args, **kwargs):
+    assert func not in _non_kwarg_device_constructors
+    new_args, new_kwargs = normalize_function(
+        func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True
+    )
+    # default device is device of first tensor in tensorlist
+    default_device = torch.device("cpu") if len(args[0]) == 0 else args[0][0].device
+    out_device = new_kwargs.get("device", default_device)
+    new_kwargs["device"] = torch.device("meta")
+    with in_kernel_invocation_manager(fake_mode):
+        r = func(*new_args, **new_kwargs)
+    return FakeTensor(fake_mode, r, out_device)
+
+
+@register_op_impl(
+    lambda fn: fn in _device_not_kwarg_ops and fn not in _nested_constructors
+)
 def nyi(fake_mode, func, *args, **kwargs):
     assert func not in _device_not_kwarg_ops, f"NYI: {func}"
 
@@ -1081,6 +1103,8 @@ class FakeTensorMode(TorchDispatchMode):
             torch.ops.aten.is_coalesced.default,
             torch.ops.aten.dense_dim.default,
             torch.ops.aten.sparse_dim.default,
+            torch.ops.aten._nested_tensor_size.default,
+            torch.ops.aten._nested_tensor_strides.default,
         }:
             # NB: no_dispatch is ok here too, this func is very simple
             with in_kernel_invocation_manager(self):
