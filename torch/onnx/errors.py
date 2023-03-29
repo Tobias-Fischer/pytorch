@@ -6,7 +6,6 @@ from typing import Optional
 
 from torch import _C
 from torch.onnx import _constants
-from torch.onnx._internal import diagnostics
 
 __all__ = [
     "OnnxExporterError",
@@ -46,6 +45,9 @@ class UnsupportedOperatorError(OnnxExporterError):
     """Raised when an operator is unsupported by the exporter."""
 
     def __init__(self, name: str, version: int, supported_version: Optional[int]):
+        # Delayed import to avoid circular dependency.
+        from torch.onnx._internal import diagnostics
+
         if supported_version is not None:
             diagnostic_rule: diagnostics.infra.Rule = (
                 diagnostics.rules.operator_supported_in_newer_opset_version

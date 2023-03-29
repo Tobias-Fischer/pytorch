@@ -1,5 +1,12 @@
 """ONNX exporter."""
 
+from ._internal.exporter import (
+    ExportOptions,
+    ExportOutput,
+    ExportOutputSerializer,
+    dynamo_export,
+)
+
 from torch import _C
 from torch._C import _onnx as _C_onnx
 from torch._C._onnx import (
@@ -81,6 +88,11 @@ __all__ = [
     "enable_log",
     # Errors
     "CheckerError",  # Backwards compatibility
+    # Dynamo Exporter
+    "ExportOptions",
+    "ExportOutput",
+    "ExportOutputSerializer",
+    "dynamo_export",
 ]
 
 # Set namespace for exposed private names
