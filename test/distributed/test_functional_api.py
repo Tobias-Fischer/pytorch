@@ -116,19 +116,19 @@ class TestExpand(MultiThreadedTestCase):
 
     def test_expand_device_mesh_tuple(self):
         mesh = dt.DeviceMesh("cpu", torch.arange(4).view(2, 2))
-        tag, rankset, group_size = ft_c._expand_group(mesh)
-        self.assertEqual(c10d._get_group_tag(mesh.get_dim_groups()[0]), tag)
-        self.assertEqual([0, 2, 1, 3], rankset)
-        self.assertEqual(2, group_size)
+        with self.assertRaisesRegex(AssertionError, "Only 1D mesh"):
+            tag, rankset, group_size = ft_c._expand_group(mesh)
 
         tag, rankset, group_size = ft_c._expand_group((mesh, 0))
         self.assertEqual(c10d._get_group_tag(mesh.get_dim_groups()[0]), tag)
-        self.assertEqual([0, 2, 1, 3], rankset)
+        expected_rankset = [0, 2] if dist.get_rank() in [0, 2] else [1, 3]
+        self.assertEqual(expected_rankset, rankset)
         self.assertEqual(2, group_size)
 
         tag, rankset, group_size = ft_c._expand_group((mesh, 1))
+        expected_rankset = [0, 1] if dist.get_rank() in [0, 1] else [2, 3]
         self.assertEqual(c10d._get_group_tag(mesh.get_dim_groups()[1]), tag)
-        self.assertEqual([0, 1, 2, 3], rankset)
+        self.assertEqual(expected_rankset, rankset)
         self.assertEqual(2, group_size)
 
 class TestPgTag(MultiThreadedTestCase):
@@ -264,6 +264,27 @@ class TestMakeFx(MultiThreadedTestCase):
 
         self.assertEqual("aten::all_reduce", nodes[1].target.name())
         self.assertEqual("aten::wait_tensor", nodes[2].target.name())
+
+        mesh = dt.DeviceMesh("cpu", torch.arange(self.world_size))
+
+        def allred_mesh(input):
+            return ft_c.all_reduce(input, "sum", mesh) + 1
+
+        mesh_graph = make_fx(allred_mesh)(torch.rand(4))
+        nodes = list(mesh_graph.graph.nodes)
+        # no getattr should appear in the graph
+        for node in nodes:
+            self.assertNotEqual("getattr", str(node.op))
+
+        def allred_mesh_dim(input):
+            return ft_c.all_reduce(input, "sum", (mesh, 0)) + 1
+
+        mesh_dim_graph = make_fx(allred_mesh_dim)(torch.rand(4))
+        # no getattr should appear in the graph
+        nodes = list(mesh_dim_graph.graph.nodes)
+        for node in nodes:
+            self.assertNotEqual("getattr", str(node.op))
+
 
 if __name__ == "__main__":
     run_tests()
